@@ -23,7 +23,7 @@ That means new users **cannot** register until you enable registration manually.
 Run:
 
 ```bash
-sudo sed -i 's/^open_registration = .*/open_registration = true/' /home/yunohost.app/atuin/config.toml
+sudo sed -i 's/^open_registration = .*/open_registration = true/' /home/yunohost.app/atuin/server.toml
 sudo systemctl restart atuin
 ```
 
@@ -36,7 +36,7 @@ atuin register
 ## Disable registration
 
 ```bash
-sudo sed -i 's/^open_registration = .*/open_registration = false/' /home/yunohost.app/atuin/config.toml
+sudo sed -i 's/^open_registration = .*/open_registration = false/' /home/yunohost.app/atuin/server.toml
 sudo systemctl restart atuin
 ```
 

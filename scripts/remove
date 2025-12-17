@@ -1,54 +1,76 @@
 #!/bin/bash
-
 #=================================================
-# IMPORT GENERIC HELPERS
+# YunoHost remove script for Atuin server
 #=================================================
+set -euo pipefail
 
-source _common.sh
 source /usr/share/yunohost/helpers
 
-### Settings are automatically loaded as bash variables
-### in every app script context, therefore typically these will exist:
-### - $domain
-### - $path
-### - $language
-### - $install_dir
-### - $port
-### ...
-
-### For remove operations:
-### - the core will deprovision every resource defined in the manifest **after** this script is ran
-### this includes removing the install directory, and data directory (if --purge was used)
+app="${YNH_APP_INSTANCE_NAME:-atuin}"
 
 #=================================================
 # REMOVE SYSTEM CONFIGURATION
 #=================================================
-ynh_script_progression "Removing system configurations related to $app..."
+ynh_script_progression --message="Removing system configurations related to $app..." --weight=10
 
-### This should be a symetric version of what happens in the install script
+#-------------------------------------------------
+# SYSTEMD
+#-------------------------------------------------
+systemd_unit="/etc/systemd/system/${app}.service"
 
-ynh_config_remove_fail2ban
-
-ynh_config_remove_logrotate
-
-# Remove the service from the list of services known by YunoHost (added from `yunohost service add`)
-if ynh_hide_warnings yunohost service status "$app" >/dev/null; then
-    yunohost service remove "$app"
+# Stop/disable the service if systemd knows it (or if the unit file exists)
+if systemctl list-unit-files 2>/dev/null | grep -q "^${app}\.service" || [[ -f "$systemd_unit" ]]; then
+  systemctl stop "$app" || true
+  systemctl disable "$app" || true
 fi
-ynh_config_remove_systemd
 
-ynh_config_remove_nginx
+# Remove the unit file if present
+if [[ -f "$systemd_unit" ]]; then
+  rm -f "$systemd_unit"
+  systemctl daemon-reload || true
+fi
 
-ynh_config_remove_phpfpm
+# Ensure no processes are still running under the app user
+# (otherwise core can't delete the system_user resource)
+if id -u "$app" >/dev/null 2>&1; then
+  pkill -u "$app" || true
+  sleep 1
+  pkill -KILL -u "$app" || true
+fi
 
-# Remove other various files specific to the app... such as:
+#-------------------------------------------------
+# NGINX
+#-------------------------------------------------
+# Matches install path: /etc/nginx/conf.d/${domain}.d/${app}.conf
+if [[ -n "${domain:-}" ]]; then
+  nginx_dir="/etc/nginx/conf.d/${domain}.d"
+  nginx_conf="${nginx_dir}/${app}.conf"
 
+  if [[ -f "$nginx_conf" ]]; then
+    rm -f "$nginx_conf"
+  fi
+
+  # Remove empty per-domain dir if empty
+  if [[ -d "$nginx_dir" ]] && [[ -z "$(ls -A "$nginx_dir" 2>/dev/null)" ]]; then
+    rmdir "$nginx_dir" || true
+  fi
+
+  # Validate + reload nginx (best effort)
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+  else
+    systemctl reload nginx || true
+  fi
+fi
+
+#-------------------------------------------------
+# OTHER FILES (only if you actually created them)
+#-------------------------------------------------
 ynh_safe_rm "/etc/cron.d/$app"
-
 ynh_safe_rm "/etc/$app"
 
 #=================================================
-# END OF SCRIPT
+# END
 #=================================================
+ynh_script_progression --message="Removal of $app completed" --last
 
-ynh_script_progression "Removal of $app completed"

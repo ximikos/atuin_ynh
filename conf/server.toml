@@ -1,0 +1,8 @@
+# conf/server.toml
+# Loaded from: $ATUIN_CONFIG_DIR/server.toml
+
+host = "127.0.0.1"
+port = __PORT__
+open_registration = true
+db_uri = "sqlite:///__DATA_DIR__/atuin.sqlite"
+
