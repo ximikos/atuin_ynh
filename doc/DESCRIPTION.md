@@ -1,1 +1,2 @@
-This is a dummy description of this app features
+Sync, search and backup shell history.  
+Atuin replaces your existing shell history with a SQLite database, and records additional context for your commands. With this context, Atuin gives you faster and better search of your shell history. Atuin syncs your shell history between all of your machines. Fully end-to-end encrypted, of course.
