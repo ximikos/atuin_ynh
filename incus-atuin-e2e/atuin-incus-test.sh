@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVER_NAME="atuin-server"
-CLIENT1="atuin-client1"
-CLIENT2="atuin-client2"
-PORT="8888"
-VERSION="18.10.0"
+# Load shared variables (PORT, VERSION, SERVER_NAME, CLIENT1_NAME, CLIENT2_NAME, CLIENT*_IMAGE, USERNAME/EMAIL/PASSWORD, ...)
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=vars.sh
+if [[ ! -f "${SCRIPT_DIR}/vars.sh" ]]; then
+  echo "[ERROR] Missing ${SCRIPT_DIR}/vars.sh"
+  exit 1
+fi
+source "${SCRIPT_DIR}/vars.sh"
 
-CLIENT1_IMAGE="images:ubuntu/22.04"
-CLIENT2_IMAGE="images:ubuntu/24.04"
-
-USERNAME="testuser"
-EMAIL="testuser@example.com"
-PASSWORD="test-pass-123"
+: "${SERVER_NAME:?Missing SERVER_NAME in vars.sh}"
+: "${CLIENT1_NAME:?Missing CLIENT1_NAME in vars.sh}"
+: "${CLIENT2_NAME:?Missing CLIENT2_NAME in vars.sh}"
+: "${CLIENT1_IMAGE:?Missing CLIENT1_IMAGE in vars.sh}"
+: "${CLIENT2_IMAGE:?Missing CLIENT2_IMAGE in vars.sh}"
+: "${PORT:?Missing PORT in vars.sh}"
+: "${VERSION:?Missing VERSION in vars.sh}"
+: "${USERNAME:?Missing USERNAME in vars.sh}"
+: "${EMAIL:?Missing EMAIL in vars.sh}"
+: "${PASSWORD:?Missing PASSWORD in vars.sh}"
 
 require() { command -v "$1" >/dev/null 2>&1 || { echo "[ERROR] Missing '$1'"; exit 1; }; }
 require incus
+
+# --- show version early (requested) ---
+echo "[INFO] Atuin version: ${VERSION}"
 
 if ! incus info "${SERVER_NAME}" >/dev/null 2>&1; then
   echo "[ERROR] Server '${SERVER_NAME}' not found. Run ./atuin-incus-up.sh first."
@@ -42,48 +52,65 @@ echo "[INFO] Using ATUIN_SYNC_ADDRESS=${SYNC_ADDR}"
 cleanup_instance() {
   local n="$1"
   if incus info "$n" >/dev/null 2>&1; then
+    echo "[INFO] Deleting ${n}"
     incus delete -f "$n" >/dev/null
   fi
 }
 
-install_atuin() {
+install_atuin_quiet() {
   local n="$1"
+  echo "[INFO] ${n}: Installing atuin ${VERSION} (quiet apt)..."
   incus exec "$n" -- bash -lc "
-    set -e
-    apt-get update
-    apt-get install -y ca-certificates curl tar
+    set -euo pipefail
+
+    log=/tmp/apt-install.log
+    rm -f \"\$log\"
+
+    echo '[INFO] Installing required apt packages (quiet)...'
+    export DEBIAN_FRONTEND=noninteractive
+    {
+      apt-get -qq update
+      apt-get -qq install -y ca-certificates curl tar
+    } >>\"\$log\" 2>&1 || {
+      echo '[ERROR] apt install failed. Last 120 log lines:'
+      tail -n 120 \"\$log\" || true
+      exit 1
+    }
+
     arch=\$(uname -m)
     case \"\$arch\" in
       x86_64)  pkg='atuin-x86_64-unknown-linux-gnu.tar.gz' ;;
       aarch64) pkg='atuin-aarch64-unknown-linux-gnu.tar.gz' ;;
-      *) echo 'Unsupported arch: '\"\$arch\"; exit 1 ;;
+      *) echo \"[ERROR] Unsupported arch: \$arch\"; exit 1 ;;
     esac
+
     cd /tmp
     curl -fsSL -o atuin.tgz \"https://github.com/atuinsh/atuin/releases/download/v${VERSION}/\${pkg}\"
     tar -xzf atuin.tgz
     dir=\$(find . -maxdepth 1 -type d -name 'atuin-*unknown-linux-*' | head -n1)
     install -m 0755 \"\${dir}/atuin\" /usr/local/bin/atuin
+
     /usr/local/bin/atuin --version
   "
 }
 
 echo "[INFO] Recreating clients..."
-cleanup_instance "${CLIENT1}"
-cleanup_instance "${CLIENT2}"
+cleanup_instance "${CLIENT1_NAME}"
+cleanup_instance "${CLIENT2_NAME}"
 
-echo "[INFO] Launching client1: Ubuntu 22.04"
-incus launch "${CLIENT1_IMAGE}" "${CLIENT1}"
+echo "[INFO] Launching ${CLIENT1_NAME}: ${CLIENT1_IMAGE}"
+incus launch "${CLIENT1_IMAGE}" "${CLIENT1_NAME}"
 
-echo "[INFO] Launching client2: Ubuntu 24.04"
-incus launch "${CLIENT2_IMAGE}" "${CLIENT2}"
+echo "[INFO] Launching ${CLIENT2_NAME}: ${CLIENT2_IMAGE}"
+incus launch "${CLIENT2_IMAGE}" "${CLIENT2_NAME}"
 
 echo "[INFO] Installing atuin in clients..."
-install_atuin "${CLIENT1}"
-install_atuin "${CLIENT2}"
+install_atuin_quiet "${CLIENT1_NAME}"
+install_atuin_quiet "${CLIENT2_NAME}"
 
-echo "[TEST] Client1: register + execute 5 harmless cmds + import + sync"
-incus exec "${CLIENT1}" -- bash -lc "
-  set -e
+echo "[TEST] ${CLIENT1_NAME}: register + execute 5 harmless cmds + import + sync"
+incus exec "${CLIENT1_NAME}" -- bash -lc "
+  set -euo pipefail
   export ATUIN_SYNC_ADDRESS='${SYNC_ADDR}'
   export ATUIN_SESSION=\"incus-test-client1-\$(date +%s%N)\"
 
@@ -109,31 +136,31 @@ incus exec "${CLIENT1}" -- bash -lc "
   atuin status | sed -n '1,120p'
 "
 
-RUN_ID="$(incus exec "${CLIENT1}" -- bash -lc "cat /tmp/atuin_run_id" | tr -d '\r\n')"
+RUN_ID="$(incus exec "${CLIENT1_NAME}" -- bash -lc "cat /tmp/atuin_run_id" | tr -d '\r\n')"
 if [[ -z "${RUN_ID}" ]]; then
-  echo "[ERROR] Failed to read RUN_ID from client1"
+  echo "[ERROR] Failed to read RUN_ID from ${CLIENT1_NAME}"
   exit 1
 fi
 echo "[INFO] RUN_ID=${RUN_ID}"
 
-echo "[INFO] Client1: extracting key"
-KEY="$(incus exec "${CLIENT1}" -- bash -lc "export ATUIN_SYNC_ADDRESS='${SYNC_ADDR}'; atuin key" | tr -d '\r' | sed -n '1p')"
+echo "[INFO] ${CLIENT1_NAME}: extracting key"
+KEY="$(incus exec "${CLIENT1_NAME}" -- bash -lc "export ATUIN_SYNC_ADDRESS='${SYNC_ADDR}'; atuin key" | tr -d '\r' | sed -n '1p')"
 if [[ -z "${KEY}" ]]; then
-  echo "[ERROR] Failed to read atuin key from client1"
+  echo "[ERROR] Failed to read atuin key from ${CLIENT1_NAME}"
   exit 1
 fi
 
-echo "[TEST] Client1: logout"
-incus exec "${CLIENT1}" -- bash -lc "
-  set -e
+echo "[TEST] ${CLIENT1_NAME}: logout"
+incus exec "${CLIENT1_NAME}" -- bash -lc "
+  set -euo pipefail
   export ATUIN_SYNC_ADDRESS='${SYNC_ADDR}'
   export ATUIN_SESSION=\"incus-test-client1-logout-\$(date +%s%N)\"
   atuin logout
 "
 
-echo "[TEST] Client2: login + sync + verify 5 cmds were synced"
-incus exec "${CLIENT2}" -- bash -lc "
-  set -e
+echo "[TEST] ${CLIENT2_NAME}: login + sync + verify 5 cmds were synced"
+incus exec "${CLIENT2_NAME}" -- bash -lc "
+  set -euo pipefail
   export ATUIN_SYNC_ADDRESS='${SYNC_ADDR}'
   export ATUIN_SESSION=\"incus-test-client2-\$(date +%s%N)\"
 
@@ -154,6 +181,6 @@ incus exec "${CLIENT2}" -- bash -lc "
 
 echo "[OK] Tests passed: register, execute+record 5 cmds, import, sync, login, verify sync."
 echo "[INFO] Leaving clients running for inspection:"
-echo "       incus exec ${CLIENT1} -- bash"
-echo "       incus exec ${CLIENT2} -- bash"
+echo "       incus exec ${CLIENT1_NAME} -- bash"
+echo "       incus exec ${CLIENT2_NAME} -- bash"
 
