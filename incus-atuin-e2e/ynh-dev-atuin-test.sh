@@ -246,4 +246,5 @@ log "If something failed, useful server-side logs:"
 log "  incus exec ${YNH_CONTAINER} -- journalctl -u nginx --no-pager -n 200 -l"
 log "  incus exec ${YNH_CONTAINER} -- tail -n 200 /var/log/nginx/${DOMAIN}-access.log 2>/dev/null || true"
 log "  incus exec ${YNH_CONTAINER} -- tail -n 200 /var/log/nginx/${DOMAIN}-error.log  2>/dev/null || true"
+log "  incus exec ${YNH_CONTAINER} -- journalctl -u atuin --no-pager -n 120 -l"
 
