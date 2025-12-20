@@ -4,7 +4,7 @@ packaging_format = 2
 
 id = "atuin"
 name = "Atuin server"
-description.en = "Self-hosted Atuin, syncing and backing up encrypted shell history across devices."
+description.en = "Self-hosted Atuin for syncing and backing up encrypted shell history across devices. Registration is disabled by default; see doc/ADMIN.md for details."
 
 version = "1.0~ynh1"
 
