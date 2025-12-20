@@ -10,7 +10,7 @@ User=__APP__
 Group=__APP__
 #WorkingDirectory=__DATA_DIR__
 #Environment=HOME=__DATA_DIR__
-Environment=ATUIN_CONFIG_DIR=__INSTALL_DIR__/config.toml
+Environment=ATUIN_CONFIG_DIR=__INSTALL_DIR__/server.toml
 #EnvironmentFile=-__DATA_DIR__/atuin.env
 
 #ExecStartPre=/usr/bin/test -w __DATA_DIR__
