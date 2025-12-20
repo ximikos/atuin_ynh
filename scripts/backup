@@ -18,17 +18,10 @@ app="${YNH_APP_INSTANCE_NAME:-atuin}"
 #=================================================
 ynh_print_info "Declaring files to be backed up for $app..."
 
-# Atuin is installed into $install_dir (provisioned by the install_dir resource),
-# and stores runtime data/config in $data_dir (provisioned by the data_dir resource).
-
-# App binary / installed files
-ynh_backup --src_path="$install_dir"
-
-# App data (SQLite DB, server.toml, env, etc.)
-ynh_backup --src_path="$data_dir"
-
-# Optional: if your app creates additional system configs explicitly and you want them in backups,
-# declare them here. Otherwise prefer to regenerate them in restore (systemd/nginx are re-rendered there).
+# In this helper version, ynh_backup expects the path as a positional argument
+# (it does NOT support --src_path flags).
+ynh_backup "$install_dir"
+ynh_backup "$data_dir"
 
 ynh_print_info "Backup declaration done."
 
