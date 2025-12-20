@@ -1,46 +1,128 @@
 #!/bin/bash
-
-## this script is only run if actual change to domain/path is detected, if you're here either $domain or $path changed
-## new location is available via $domain and $path (or $new_domain and $new_path variables if you want to be explicit)
-## old values are available via, you guessed it, $old_domain and $old_path
-
 #=================================================
-# IMPORT GENERIC HELPERS
+# YunoHost change_url script for Atuin server
 #=================================================
 
-source _common.sh
 source /usr/share/yunohost/helpers
 
-#=================================================
-# STOP SYSTEMD SERVICE
-#=================================================
-ynh_script_progression "Stopping $app's systemd service..."
-
-ynh_systemctl --service="$app" --action="stop"
+app="${YNH_APP_INSTANCE_NAME:-atuin}"
 
 #=================================================
-# MODIFY URL IN NGINX CONF
-#=================================================
-ynh_script_progression "Updating NGINX web server configuration..."
-
-# this will most likely adjust NGINX config correctly
-ynh_config_change_url_nginx
-
-#=================================================
-# SPECIFIC MODIFICATIONS
+# Local helpers (inline: avoid sourcing extra files after YunoHost helpers)
 #=================================================
 
-## do any changes to files that reference specific installation domain/path, i.e. regenerate configs etc
+_escape_sed_repl() {
+  # Escape \, &, and delimiter | for sed replacement
+  printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
+render_template() {
+  local src="$1"
+  local dest="$2"
+
+  if [[ ! -f "$src" ]]; then
+    ynh_die --message="Missing template: $src"
+  fi
+
+  cp -f "$src" "$dest"
+
+  local app_esc install_esc data_esc port_esc path_esc
+  app_esc="$(_escape_sed_repl "$app")"
+  install_esc="$(_escape_sed_repl "$install_dir")"
+  data_esc="$(_escape_sed_repl "$data_dir")"
+  port_esc="$(_escape_sed_repl "$port")"
+  path_esc="$(_escape_sed_repl "$path")"
+
+  sed -i \
+    -e "s|__APP__|$app_esc|g" \
+    -e "s|__INSTALL_DIR__|$install_esc|g" \
+    -e "s|__DATA_DIR__|$data_esc|g" \
+    -e "s|__PORT__|$port_esc|g" \
+    -e "s|__PATH__|$path_esc|g" \
+    "$dest"
+}
+
+ynh_systemd_do() {
+  local service_name="$1"
+  local action="$2"
+
+  if command -v ynh_systemd_action >/dev/null 2>&1; then
+    ynh_systemd_action --service_name="$service_name" --action="$action" --log_path=systemd
+  else
+    systemctl "$action" "$service_name"
+  fi
+}
 
 #=================================================
-# START SYSTEMD SERVICE
+# LOAD SETTINGS / RESOURCES
 #=================================================
-ynh_script_progression "Starting $app's systemd service..."
+: "${domain:?domain is required}"
+: "${path:=/}"
+: "${install_dir:?install_dir is required}"
+: "${data_dir:?data_dir is required}"
+: "${port:?port is required}"
 
-ynh_systemctl --service="$app" --action="start"
+# These are typically provided by YunoHost during change_url
+: "${new_domain:?new_domain is required}"
+: "${new_path:=/}"
+
+# Ensure paths start with '/'
+if [[ "${path}" != /* ]]; then
+  path="/${path}"
+fi
+if [[ "${new_path}" != /* ]]; then
+  new_path="/${new_path}"
+fi
+
+# change_url runs from .../scripts, resolve app root for conf/*
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+app_root="$(cd "$script_dir/.." && pwd)"
 
 #=================================================
-# END OF SCRIPT
+# CHANGE URL
 #=================================================
+ynh_script_progression --message="Updating URL for $app..." --weight=20
 
-ynh_script_progression "Change of URL completed for $app"
+# Update variables used by templates
+domain="$new_domain"
+path="$new_path"
+
+#-------------------------------------------------
+# NGINX REVERSE PROXY
+#-------------------------------------------------
+ynh_script_progression --message="Updating NGINX reverse proxy…" --weight=50
+
+# Remove old nginx conf (best effort)
+old_nginx_conf="/etc/nginx/conf.d/${new_domain}.d/${app}.conf"
+# We cannot reliably know the old domain dir if domain already changed in env,
+# so remove any existing conf for this app.
+shopt -s nullglob
+for f in /etc/nginx/conf.d/*.d/${app}.conf; do
+  rm -f "$f" || true
+done
+shopt -u nullglob
+
+# Install new nginx conf
+nginx_dir="/etc/nginx/conf.d/${domain}.d"
+nginx_conf="${nginx_dir}/${app}.conf"
+mkdir -p "$nginx_dir"
+
+render_template "$app_root/conf/nginx.conf" "$nginx_conf"
+chmod 0644 "$nginx_conf"
+
+if ! nginx -t; then
+  ynh_die --message="nginx -t failed, refusing to reload nginx."
+fi
+systemctl reload nginx
+
+#-------------------------------------------------
+# RESTART SERVICE (best effort)
+#-------------------------------------------------
+ynh_script_progression --message="Restarting $app…" --weight=30
+ynh_systemd_do "$app" restart || true
+
+#=================================================
+# END
+#=================================================
+ynh_script_progression --message="URL update for $app completed." --last
+

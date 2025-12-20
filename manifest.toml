@@ -50,15 +50,11 @@ ram.runtime = "100M"
     [install.domain]
     # this is a generic question - ask strings are automatically handled by YunoHost's core
     type = "domain"
-    ask.en = "Choose a subdomain (recommended: atuin.example.tld)"
-    help.en = "It is strongly recommended to use a dedicated third-level domain, e.g. atuin.example.tld"
 
     [install.path]
     # this is a generic question - ask strings are automatically handled by YunoHost's core
     type = "path"
     default = "/"
-    ask.en = "Installation path"
-    help.en = "Recommended: / (Atuin server is typically exposed at the root path)."
 
     [install.init_main_permission]
     # this is a generic question - ask strings are automatically handled by YunoHost's core

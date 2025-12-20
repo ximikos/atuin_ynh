@@ -2,31 +2,17 @@
 #=================================================
 # YunoHost restore script for Atuin server
 #=================================================
-set -euo pipefail
 
 source /usr/share/yunohost/helpers
 
 app="${YNH_APP_INSTANCE_NAME:-atuin}"
 
 #=================================================
-# LOAD SETTINGS / RESOURCES
+# Local helpers (inline: avoid sourcing extra files after YunoHost helpers)
 #=================================================
-: "${install_dir:?install_dir is required}"
-: "${data_dir:?data_dir is required}"
-: "${port:?port is required}"
 
-app_user="$app"
-app_group="$app"
-
-# Ensure path starts with '/' if present (may be needed by nginx template substitutions)
-if [[ -n "${path:-}" && "${path}" != /* ]]; then
-  path="/${path}"
-fi
-
-#=================================================
-# HELPER: safe template rendering (sed with escaping)
-#=================================================
 _escape_sed_repl() {
+  # Escape \, &, and delimiter | for sed replacement
   printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
 }
 
@@ -45,7 +31,7 @@ render_template() {
   install_esc="$(_escape_sed_repl "$install_dir")"
   data_esc="$(_escape_sed_repl "$data_dir")"
   port_esc="$(_escape_sed_repl "$port")"
-  path_esc="$(_escape_sed_repl "${path:-/}")"
+  path_esc="$(_escape_sed_repl "$path")"
 
   sed -i \
     -e "s|__APP__|$app_esc|g" \
@@ -56,67 +42,102 @@ render_template() {
     "$dest"
 }
 
+ynh_systemd_do() {
+  local service_name="$1"
+  local action="$2"
+
+  if command -v ynh_systemd_action >/dev/null 2>&1; then
+    ynh_systemd_action --service_name="$service_name" --action="$action" --log_path=systemd
+  else
+    systemctl "$action" "$service_name"
+  fi
+}
+
+#=================================================
+# LOAD SETTINGS / RESOURCES
+#=================================================
+: "${domain:?domain is required}"
+: "${path:=/}"
+: "${install_dir:?install_dir is required}"
+: "${data_dir:?data_dir is required}"
+: "${port:?port is required}"
+
+app_user="$app"
+app_group="$app"
+
+# Ensure path starts with '/'
+if [[ "${path}" != /* ]]; then
+  path="/${path}"
+fi
+
+# restore runs from .../scripts, resolve app root for conf/*
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+app_root="$(cd "$script_dir/.." && pwd)"
+
 #=================================================
 # RESTORE
 #=================================================
-ynh_script_progression --message="Restoring $app..." --weight=10
+ynh_script_progression --message="Restoring $app..." --weight=20
 
-# Stop service if it exists (best effort)
-systemctl stop "$app" || true
+# YunoHost core typically restores the declared files itself.
+# Here, we (re)apply system configuration that should exist after restore.
 
-# Restore install_dir + data_dir (provided by YunoHost backup context)
-ynh_restore_file --origin_path="$install_dir"
-ynh_restore_file --origin_path="$data_dir"
+#-------------------------------------------------
+# Ensure ownership/permissions of data files
+#-------------------------------------------------
+if [[ -d "$data_dir" ]]; then
+  chown -R "$app_user:$app_group" "$data_dir" || true
+  chmod 0750 "$data_dir" || true
 
-# Fix ownership/permissions for data dir
-install -d -m 0750 -o "$app_user" -g "$app_group" "$data_dir"
-chown -R "$app_user:$app_group" "$data_dir" || true
-chmod 0750 "$data_dir" || true
-
-# Ensure expected files permissions (do not overwrite content)
-if [[ -f "$data_dir/server.toml" ]]; then
-  chown "$app_user:$app_group" "$data_dir/server.toml" || true
-  chmod 0640 "$data_dir/server.toml" || true
-fi
-if [[ -f "$data_dir/atuin.env" ]]; then
-  chown "$app_user:$app_group" "$data_dir/atuin.env" || true
-  chmod 0640 "$data_dir/atuin.env" || true
-fi
-if [[ -f "$data_dir/atuin.sqlite" ]]; then
-  chown "$app_user:$app_group" "$data_dir/atuin.sqlite" || true
-  chmod 0640 "$data_dir/atuin.sqlite" || true
-fi
-
-# Restore systemd unit if it was part of the backup; otherwise render from template
-systemd_unit="/etc/systemd/system/${app}.service"
-if [[ -f "$systemd_unit" ]]; then
-  ynh_restore_file --origin_path="$systemd_unit" || true
-else
-  render_template "../conf/atuin.service" "$systemd_unit"
-  chmod 0644 "$systemd_unit"
-fi
-
-systemctl daemon-reload || true
-systemctl enable "$app" || true
-
-# Restore nginx conf if it was part of the backup; otherwise render from template
-if [[ -n "${domain:-}" ]]; then
-  nginx_dir="/etc/nginx/conf.d/${domain}.d"
-  nginx_conf="${nginx_dir}/${app}.conf"
-
-  mkdir -p "$nginx_dir"
-  if [[ -f "$nginx_conf" ]]; then
-    ynh_restore_file --origin_path="$nginx_conf" || true
-  else
-    render_template "../conf/nginx.conf" "$nginx_conf"
-    chmod 0644 "$nginx_conf"
+  # Ensure typical files are not world-readable
+  if [[ -f "$data_dir/server.toml" ]]; then
+    chmod 0640 "$data_dir/server.toml" || true
   fi
-
-  nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+  if [[ -f "$data_dir/atuin.env" ]]; then
+    chmod 0640 "$data_dir/atuin.env" || true
+  fi
+  if [[ -f "$data_dir/atuin.sqlite" ]]; then
+    chmod 0640 "$data_dir/atuin.sqlite" || true
+  fi
 fi
 
-# Start service
-systemctl restart "$app" || true
+#-------------------------------------------------
+# SYSTEMD SERVICE
+#-------------------------------------------------
+ynh_script_progression --message="Reinstalling systemd service…" --weight=30
 
+systemd_unit="/etc/systemd/system/${app}.service"
+render_template "$app_root/conf/atuin.service" "$systemd_unit"
+chmod 0644 "$systemd_unit"
+
+systemctl daemon-reload
+systemctl enable --quiet "$app" || true
+
+#-------------------------------------------------
+# NGINX REVERSE PROXY
+#-------------------------------------------------
+ynh_script_progression --message="Reinstalling NGINX reverse proxy…" --weight=30
+
+nginx_dir="/etc/nginx/conf.d/${domain}.d"
+nginx_conf="${nginx_dir}/${app}.conf"
+mkdir -p "$nginx_dir"
+
+render_template "$app_root/conf/nginx.conf" "$nginx_conf"
+chmod 0644 "$nginx_conf"
+
+if ! nginx -t; then
+  ynh_die --message="nginx -t failed, refusing to reload nginx."
+fi
+systemctl reload nginx
+
+#-------------------------------------------------
+# START SERVICE
+#-------------------------------------------------
+ynh_script_progression --message="Starting $app…" --weight=20
+ynh_systemd_do "$app" restart
+
+#=================================================
+# END
+#=================================================
 ynh_script_progression --message="Restore of $app completed." --last
 

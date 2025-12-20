@@ -2,39 +2,33 @@
 #=================================================
 # YunoHost backup script for Atuin server
 #=================================================
-set -euo pipefail
 
 source /usr/share/yunohost/helpers
 
 app="${YNH_APP_INSTANCE_NAME:-atuin}"
 
 #=================================================
-# BACKUP
+# LOAD SETTINGS / RESOURCES
 #=================================================
-ynh_script_progression --message="Backing up $app..." --weight=10
-
-# These variables are expected to be provided by the app script context:
-# $install_dir, $data_dir, $domain, $path, $port, ...
 : "${install_dir:?install_dir is required}"
 : "${data_dir:?data_dir is required}"
 
-# Stop service to keep SQLite consistent (best effort)
-systemctl stop "$app" || true
+#=================================================
+# BACKUP (declarative)
+#=================================================
+ynh_print_info "Declaring files to be backed up for $app..."
 
-# Backup install dir (binary)
+# Atuin is installed into $install_dir (provisioned by the install_dir resource),
+# and stores runtime data/config in $data_dir (provisioned by the data_dir resource).
+
+# App binary / installed files
 ynh_backup --src_path="$install_dir"
 
-# Backup data dir (server.toml, atuin.env, sqlite DB)
+# App data (SQLite DB, server.toml, env, etc.)
 ynh_backup --src_path="$data_dir"
 
-# Also backup the system configs we created manually (best effort)
-ynh_backup --src_path="/etc/systemd/system/${app}.service" || true
-if [[ -n "${domain:-}" ]]; then
-  ynh_backup --src_path="/etc/nginx/conf.d/${domain}.d/${app}.conf" || true
-fi
+# Optional: if your app creates additional system configs explicitly and you want them in backups,
+# declare them here. Otherwise prefer to regenerate them in restore (systemd/nginx are re-rendered there).
 
-# Start service again
-systemctl start "$app" || true
-
-ynh_script_progression --message="Backup of $app completed." --last
+ynh_print_info "Backup declaration done."
 

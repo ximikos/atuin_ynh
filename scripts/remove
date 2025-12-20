@@ -2,14 +2,39 @@
 #=================================================
 # YunoHost remove script for Atuin server
 #=================================================
-set -euo pipefail
 
 source /usr/share/yunohost/helpers
 
 app="${YNH_APP_INSTANCE_NAME:-atuin}"
 
 #=================================================
-# REMOVE SYSTEM CONFIGURATION
+# Local helpers (inline: avoid sourcing extra files after YunoHost helpers)
+#=================================================
+
+ynh_rm_tree() {
+  local target="$1"
+  if command -v ynh_secure_remove >/dev/null 2>&1; then
+    ynh_secure_remove --file="$target"
+  elif command -v ynh_safe_rm >/dev/null 2>&1; then
+    ynh_safe_rm "$target"
+  else
+    ynh_die --message="No safe remove helper available to delete: $target"
+  fi
+}
+
+ynh_systemd_do() {
+  local service_name="$1"
+  local action="$2"
+
+  if command -v ynh_systemd_action >/dev/null 2>&1; then
+    ynh_systemd_action --service_name="$service_name" --action="$action" --log_path=systemd
+  else
+    systemctl "$action" "$service_name"
+  fi
+}
+
+#=================================================
+# REMOVE
 #=================================================
 ynh_script_progression --message="Removing system configurations related to $app..." --weight=10
 
@@ -18,20 +43,15 @@ ynh_script_progression --message="Removing system configurations related to $app
 #-------------------------------------------------
 systemd_unit="/etc/systemd/system/${app}.service"
 
-# Stop/disable the service if systemd knows it (or if the unit file exists)
-if systemctl list-unit-files 2>/dev/null | grep -q "^${app}\.service" || [[ -f "$systemd_unit" ]]; then
-  systemctl stop "$app" || true
-  systemctl disable "$app" || true
-fi
+ynh_systemd_do "$app" stop || true
+systemctl disable --quiet "$app" || true
 
-# Remove the unit file if present
 if [[ -f "$systemd_unit" ]]; then
-  rm -f "$systemd_unit"
+  rm -f "$systemd_unit" || true
   systemctl daemon-reload || true
 fi
 
-# Ensure no processes are still running under the app user
-# (otherwise core can't delete the system_user resource)
+# Ensure nothing is still running under the app user (best effort)
 if id -u "$app" >/dev/null 2>&1; then
   pkill -u "$app" || true
   sleep 1
@@ -41,21 +61,20 @@ fi
 #-------------------------------------------------
 # NGINX
 #-------------------------------------------------
-# Matches install path: /etc/nginx/conf.d/${domain}.d/${app}.conf
-if [[ -n "${domain:-}" ]]; then
-  nginx_dir="/etc/nginx/conf.d/${domain}.d"
-  nginx_conf="${nginx_dir}/${app}.conf"
+# Remove /etc/nginx/conf.d/<domain>.d/<app>.conf without relying on $domain
+shopt -s nullglob
+nginx_confs=(/etc/nginx/conf.d/*.d/${app}.conf)
+shopt -u nullglob
 
-  if [[ -f "$nginx_conf" ]]; then
-    rm -f "$nginx_conf"
-  fi
+if (( ${#nginx_confs[@]} > 0 )); then
+  for f in "${nginx_confs[@]}"; do
+    rm -f "$f" || true
+    d="$(dirname "$f")"
+    if [[ -d "$d" ]] && [[ -z "$(ls -A "$d" 2>/dev/null)" ]]; then
+      rmdir "$d" || true
+    fi
+  done
 
-  # Remove empty per-domain dir if empty
-  if [[ -d "$nginx_dir" ]] && [[ -z "$(ls -A "$nginx_dir" 2>/dev/null)" ]]; then
-    rmdir "$nginx_dir" || true
-  fi
-
-  # Validate + reload nginx (best effort)
   if command -v nginx >/dev/null 2>&1; then
     nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
   else
@@ -64,10 +83,15 @@ if [[ -n "${domain:-}" ]]; then
 fi
 
 #-------------------------------------------------
-# OTHER FILES (only if you actually created them)
+# OTHER FILES (best effort; only if they exist)
 #-------------------------------------------------
-ynh_safe_rm "/etc/cron.d/$app"
-ynh_safe_rm "/etc/$app"
+if [[ -f "/etc/cron.d/$app" ]]; then
+  rm -f "/etc/cron.d/$app" || true
+fi
+
+if [[ -d "/etc/$app" ]]; then
+  ynh_rm_tree "/etc/$app"
+fi
 
 #=================================================
 # END

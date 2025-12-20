@@ -25,12 +25,39 @@ TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
 
+# --- Hardening baseline ---
 NoNewPrivileges=true
+UMask=0027
+
 PrivateTmp=true
+PrivateDevices=true
+PrivateMounts=true
+
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=__DATA_DIR__
-UMask=0027
+
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectClock=true
+
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# Allow only common network families needed by typical web services (TCP + local unix sockets)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Don't allow the service to gain additional Linux capabilities
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Optional: stricter syscall filtering (may need relaxing if it breaks runtime)
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @network-io
+SystemCallFilter=~@privileged @resources @mount @reboot @swap @raw-io
 
 [Install]
 WantedBy=multi-user.target
