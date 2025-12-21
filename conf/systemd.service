@@ -11,9 +11,9 @@ Group=__APP__
 #WorkingDirectory=__DATA_DIR__
 #Environment=HOME=__DATA_DIR__
 Environment=ATUIN_CONFIG_DIR=__INSTALL_DIR__
-#EnvironmentFile=-__DATA_DIR__/atuin.env
+# configure RUST & Atuin logging
+EnvironmentFile=-__INSTALL_DIR__/atuin.env
 
-#ExecStartPre=/usr/bin/test -w __DATA_DIR__
 ExecStart=__INSTALL_DIR__/atuin server start
 
 Restart=on-failure

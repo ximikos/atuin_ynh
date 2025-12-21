@@ -22,6 +22,7 @@ chmod +x $install_dir/atuin
 ynh_script_progression "Adding $app's configuration files..."
 
 ynh_config_add --template="server.toml" --destination="$install_dir/server.toml"
+ynh_config_add --template="atuin.env" --destination="$install_dir/atuin.env"
 
 #=================================================
 # SYSTEM CONFIGURATION
