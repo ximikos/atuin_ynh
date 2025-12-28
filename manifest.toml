@@ -6,7 +6,7 @@ id = "atuin"
 name = "Atuin"
 description.en = "Self-hosted Atuin for syncing and backing up encrypted shell history across devices"
 
-version = "1.0~ynh1"
+version = "18.10.0~ynh1"
 
 maintainers = ["ximikos"]
 
@@ -47,8 +47,8 @@ ram.runtime = "100M"
     [resources.sources]
 
     [resources.sources.main]
-    url = "https://github.com/atuinsh/atuin/releases/download/v18.10.0/atuin-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 = "21fd614adca7bb6e26b7e37d867b7a8ff3436df8821e74de3941bc18533b1898"
+    url = "https://github.com/atuinsh/atuin/archive/refs/tags/v18.10.0.tar.gz"
+    sha256 = "02228929976142f63b4464a35b8b29b29155e1814cf03e99c95381954c5d9e37"
 
     autoupdate.strategy = "latest_github_tag"
 
