@@ -1,0 +1,14 @@
+version = "1.0"
+
+[main]
+
+  [main.registration]
+  name.en = "Registration"
+
+    [main.registration.open_registration]
+    ask.en = "Allow new user registrations"
+    type = "boolean"
+    yes = "Enabled"
+    no = "Disabled"
+    bind = "null"
+
