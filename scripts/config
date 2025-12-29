@@ -1,0 +1,44 @@
+#!/bin/bash
+
+source /usr/share/yunohost/helpers
+ynh_abort_if_errors
+
+# Path to Atuin server configuration
+config_file="$install_dir/server.toml"
+
+get__open_registration() {
+  local value
+
+  # Extract current value from server.toml (true / false)
+  value="$(grep -E '^\s*open_registration\s*=' "$config_file" \
+    | tail -n 1 \
+    | sed -E 's/.*=\s*(true|false).*/\1/')" || true
+
+  # Default to false if the key is missing or invalid
+  if [[ "$value" != "true" && "$value" != "false" ]]; then
+    value="false"
+  fi
+
+  echo "$value"
+}
+
+set__open_registration() {
+  # Normalize value to TOML-compatible boolean: true / false
+  case "${open_registration,,}" in
+    true|yes|1) open_registration="true" ;;
+    false|no|0) open_registration="false" ;;
+    *) open_registration="false" ;;
+  esac
+
+  if grep -qE '^\s*open_registration\s*=' "$config_file"; then
+    sed -i -E "s/^\s*open_registration\s*=.*/open_registration = ${open_registration}/" "$config_file"
+  else
+    printf "\nopen_registration = %s\n" "${open_registration}" >> "$config_file"
+  fi
+
+  ynh_print_info "Applying open_registration=${open_registration} and restarting ${app}..."
+  ynh_systemctl --service="$app" --action="restart"
+}
+
+ynh_app_config_run "$1"
+
