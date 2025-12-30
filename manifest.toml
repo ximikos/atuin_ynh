@@ -50,7 +50,8 @@ ram.runtime = "100M"
     url = "https://github.com/atuinsh/atuin/archive/refs/tags/v18.10.0.tar.gz"
     sha256 = "02228929976142f63b4464a35b8b29b29155e1814cf03e99c95381954c5d9e37"
 
-    autoupdate.strategy = "latest_github_tag"
+    autoupdate.strategy = "latest_github_release"
+    autoupdate.asset = "atuin-x86_64-unknown-linux-gnu\\.tar\\.gz"
 
     [resources.system_user]
 
