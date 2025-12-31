@@ -17,7 +17,7 @@ CLIENT2_IMAGE="images:ubuntu/24.04"
 BASE_DIR="${HOME}/incus-atuin/server"
 
 # Test account (used by test script)
-USERNAME="testuser"
-EMAIL="testuser@example.com"
+USERNAME="testuser2"
+EMAIL="testuser2@example.com"
 PASSWORD="test-pass-123"
 
