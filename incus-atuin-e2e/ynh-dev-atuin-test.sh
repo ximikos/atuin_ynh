@@ -12,9 +12,60 @@ err()  { echo "[ERROR] $*" >&2; }
 require() { command -v "$1" >/dev/null 2>&1 || { err "Missing '$1'"; exit 1; }; }
 require incus
 
-# --- Config (override via env if needed) ---
-YNH_CONTAINER="${YNH_CONTAINER:-ynh-dev-bookworm-unstable}"
-DOMAIN="${DOMAIN:-atuin.yolo.test}"
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  ./ynh-dev-atuin-test.sh [YNH_CONTAINER] [DOMAIN]
+
+Or via env:
+  YNH_CONTAINER=ynh-dev-trixie-unstable DOMAIN=atuin.yolo.test ./ynh-dev-atuin-test.sh
+
+Defaults:
+  - If YNH_CONTAINER is not provided, script auto-picks:
+      1) ynh-dev-trixie-unstable if exists
+      2) ynh-dev-bookworm-unstable if exists
+  - DOMAIN defaults to atuin.yolo.test
+EOF
+}
+
+# ---- Arg/env handling ----
+ARG_YNH_CONTAINER="${1:-}"
+ARG_DOMAIN="${2:-}"
+
+DEFAULT_DOMAIN="atuin.yolo.test"
+DOMAIN="${DOMAIN:-${ARG_DOMAIN:-$DEFAULT_DOMAIN}}"
+
+container_exists() {
+  local n="$1"
+  incus info "$n" >/dev/null 2>&1
+}
+
+auto_pick_container() {
+  if container_exists "ynh-dev-trixie-unstable"; then
+    echo "ynh-dev-trixie-unstable"
+    return 0
+  fi
+  if container_exists "ynh-dev-bookworm-unstable"; then
+    echo "ynh-dev-bookworm-unstable"
+    return 0
+  fi
+  return 1
+}
+
+# Priority: env > arg > auto-pick
+if [[ -n "${YNH_CONTAINER:-}" ]]; then
+  YNH_CONTAINER="${YNH_CONTAINER}"
+elif [[ -n "${ARG_YNH_CONTAINER}" ]]; then
+  YNH_CONTAINER="${ARG_YNH_CONTAINER}"
+else
+  if ! YNH_CONTAINER="$(auto_pick_container)"; then
+    err "No suitable YunoHost container found."
+    err "Expected one of: ynh-dev-trixie-unstable, ynh-dev-bookworm-unstable"
+    err "Run 'incus list' and pass the container name as 1st arg or set YNH_CONTAINER=..."
+    usage
+    exit 1
+  fi
+fi
 
 # YunoHost's local CA cert path (common default)
 YNH_CA_PATH="${YNH_CA_PATH:-/etc/ssl/certs/ca-yunohost_crt.pem}"
@@ -34,6 +85,8 @@ log "Domain: ${DOMAIN}"
 
 if ! incus info "${YNH_CONTAINER}" >/dev/null 2>&1; then
   err "YunoHost container '${YNH_CONTAINER}' not found (incus info failed)."
+  err "Available containers:"
+  incus list >&2 || true
   exit 1
 fi
 
@@ -104,8 +157,6 @@ install_yunohost_ca_into_client() {
   local client="$1"
 
   log "${client}: Installing YunoHost CA from ${YNH_CONTAINER}:${YNH_CA_PATH} ..."
-  # Stream CA cert from YunoHost container into client container and register it in system trust store.
-  # If the CA file doesn't exist, we fail clearly.
   incus exec "${YNH_CONTAINER}" -- bash -lc "test -s '${YNH_CA_PATH}'" >/dev/null 2>&1 || {
     err "YunoHost CA file not found or empty: ${YNH_CA_PATH} (override via YNH_CA_PATH=...)"
     exit 1
