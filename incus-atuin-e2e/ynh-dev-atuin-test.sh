@@ -92,7 +92,7 @@ cleanup_instance() {
 }
 
 # Cleanup on exit:
-# - previously clients were only deleted at the beginning
+# - clients were previously deleted only at the beginning
 # - if the script fails mid-run, they'd be left behind
 # - set KEEP_CLIENTS=1 to keep them for debugging
 cleanup_on_exit() {
@@ -230,6 +230,39 @@ detect_scheme() {
   echo "http"
 }
 
+delete_remote_account_from_client1() {
+  # Client-side deletion of the server account.
+  # We try to find a non-interactive flag if supported; otherwise fall back to piping "yes".
+  log "[CLEANUP] ${CLIENT1_NAME}: deleting remote account for '${USERNAME}'"
+
+  incus exec "${CLIENT1_NAME}" -- bash -lc "
+    set -euo pipefail
+    export ATUIN_SYNC_ADDRESS='${SYNC_ADDR}'
+    export ATUIN_SESSION=\"ynh-test-client1-cleanup-\$(date +%s%N)\"
+
+    # Ensure we're logged in (client1 was logged out earlier)
+    atuin login -u '${USERNAME}' -p '${PASSWORD}' -k '${KEY}'
+
+    help=\$(atuin account delete --help 2>&1 || true)
+
+    if echo \"\$help\" | grep -qE '(--yes|-y|--force)'; then
+      if echo \"\$help\" | grep -qE '(^|[[:space:]])--yes([[:space:]]|,|$)'; then
+        atuin account delete --yes
+      elif echo \"\$help\" | grep -qE '(^|[[:space:]])-y([[:space:]]|,|$)'; then
+        atuin account delete -y
+      elif echo \"\$help\" | grep -qE '(^|[[:space:]])--force([[:space:]]|,|$)'; then
+        atuin account delete --force
+      else
+        # Flag hinted but not clearly parseable; fall back to prompt automation
+        yes | atuin account delete
+      fi
+    else
+      # No non-interactive flags detected -> best-effort answer the prompt
+      yes | atuin account delete
+    fi
+  "
+}
+
 log "Recreating clients..."
 cleanup_instance "${CLIENT1_NAME}"
 cleanup_instance "${CLIENT2_NAME}"
@@ -334,7 +367,10 @@ incus exec "${CLIENT2_NAME}" -- bash -lc "
   atuin status | sed -n '1,120p'
 "
 
-log "[OK] Tests passed: register, execute+record 5 cmds, import, sync, login, verify sync."
+# Ensure no user remains on server after successful tests (client-side).
+delete_remote_account_from_client1
+
+log "[OK] Tests passed: register, execute+record 5 cmds, import, sync, login, verify sync, delete account."
 log "If something failed, useful server-side logs:"
 log "  incus exec ${YNH_CONTAINER} -- journalctl -u nginx --no-pager -n 200 -l"
 log "  incus exec ${YNH_CONTAINER} -- tail -n 200 /var/log/nginx/${DOMAIN}-access.log 2>/dev/null || true"
