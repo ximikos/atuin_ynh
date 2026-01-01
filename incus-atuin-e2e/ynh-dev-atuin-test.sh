@@ -12,9 +12,64 @@ err()  { echo "[ERROR] $*" >&2; }
 require() { command -v "$1" >/dev/null 2>&1 || { err "Missing '$1'"; exit 1; }; }
 require incus
 
-# --- Config (override via env if needed) ---
-YNH_CONTAINER="${YNH_CONTAINER:-ynh-dev-bookworm-unstable}"
-DOMAIN="${DOMAIN:-atuin.yolo.test}"
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  ./ynh-dev-atuin-test.sh [YNH_CONTAINER] [DOMAIN]
+
+Or via env:
+  YNH_CONTAINER=ynh-dev-trixie-unstable DOMAIN=atuin.yolo.test ./ynh-dev-atuin-test.sh
+
+Defaults:
+  - If YNH_CONTAINER is not provided, script auto-picks:
+      1) ynh-dev-trixie-unstable if exists
+      2) ynh-dev-bookworm-unstable if exists
+  - DOMAIN defaults to atuin.yolo.test
+
+Cleanup:
+  - Client containers are deleted automatically on script exit.
+  - Set KEEP_CLIENTS=1 to keep them for debugging.
+EOF
+}
+
+# ---- Arg/env handling ----
+ARG_YNH_CONTAINER="${1:-}"
+ARG_DOMAIN="${2:-}"
+
+DEFAULT_DOMAIN="atuin.yolo.test"
+DOMAIN="${DOMAIN:-${ARG_DOMAIN:-$DEFAULT_DOMAIN}}"
+
+container_exists() {
+  local n="$1"
+  incus info "$n" >/dev/null 2>&1
+}
+
+auto_pick_container() {
+  if container_exists "ynh-dev-trixie-unstable"; then
+    echo "ynh-dev-trixie-unstable"
+    return 0
+  fi
+  if container_exists "ynh-dev-bookworm-unstable"; then
+    echo "ynh-dev-bookworm-unstable"
+    return 0
+  fi
+  return 1
+}
+
+# Priority: env > arg > auto-pick
+if [[ -n "${YNH_CONTAINER:-}" ]]; then
+  YNH_CONTAINER="${YNH_CONTAINER}"
+elif [[ -n "${ARG_YNH_CONTAINER}" ]]; then
+  YNH_CONTAINER="${ARG_YNH_CONTAINER}"
+else
+  if ! YNH_CONTAINER="$(auto_pick_container)"; then
+    err "No suitable YunoHost container found."
+    err "Expected one of: ynh-dev-trixie-unstable, ynh-dev-bookworm-unstable"
+    err "Run 'incus list' and pass the container name as 1st arg or set YNH_CONTAINER=..."
+    usage
+    exit 1
+  fi
+fi
 
 # YunoHost's local CA cert path (common default)
 YNH_CA_PATH="${YNH_CA_PATH:-/etc/ssl/certs/ca-yunohost_crt.pem}"
@@ -28,12 +83,41 @@ YNH_CA_PATH="${YNH_CA_PATH:-/etc/ssl/certs/ca-yunohost_crt.pem}"
 : "${EMAIL:?Missing EMAIL in vars.sh}"
 : "${PASSWORD:?Missing PASSWORD in vars.sh}"
 
+cleanup_instance() {
+  local n="$1"
+  if incus info "$n" >/dev/null 2>&1; then
+    log "Deleting ${n}"
+    incus delete -f "$n" >/dev/null
+  fi
+}
+
+# Cleanup on exit:
+# - clients were previously deleted only at the beginning
+# - if the script fails mid-run, they'd be left behind
+# - set KEEP_CLIENTS=1 to keep them for debugging
+cleanup_on_exit() {
+  local exit_code=$?
+  if [[ "${KEEP_CLIENTS:-0}" == "1" ]]; then
+    warn "KEEP_CLIENTS=1 set -> keeping client containers (${CLIENT1_NAME}, ${CLIENT2_NAME})"
+    exit "$exit_code"
+  fi
+
+  # Always try cleanup; don't mask original failure
+  set +e
+  cleanup_instance "${CLIENT1_NAME}"
+  cleanup_instance "${CLIENT2_NAME}"
+  exit "$exit_code"
+}
+trap cleanup_on_exit EXIT
+
 log "Atuin version: ${VERSION}"
 log "YunoHost container: ${YNH_CONTAINER}"
 log "Domain: ${DOMAIN}"
 
 if ! incus info "${YNH_CONTAINER}" >/dev/null 2>&1; then
   err "YunoHost container '${YNH_CONTAINER}' not found (incus info failed)."
+  err "Available containers:"
+  incus list >&2 || true
   exit 1
 fi
 
@@ -44,14 +128,6 @@ if [[ -z "${YNH_IP}" ]]; then
   exit 1
 fi
 log "${YNH_CONTAINER} IPv4 = ${YNH_IP}"
-
-cleanup_instance() {
-  local n="$1"
-  if incus info "$n" >/dev/null 2>&1; then
-    log "Deleting ${n}"
-    incus delete -f "$n" >/dev/null
-  fi
-}
 
 install_atuin_quiet() {
   local n="$1"
@@ -64,6 +140,11 @@ install_atuin_quiet() {
     export DEBIAN_FRONTEND=noninteractive
     {
       apt-get -qq update
+
+      # We install ca-certificates mainly because we need HTTPS to:
+      #  - download Atuin release artifacts from GitHub via curl
+      # It also provides the base system trust store, which matters later if the YunoHost
+      # instance uses HTTPS (we then add YunoHost's *local* CA on top of this).
       apt-get -qq install -y ca-certificates curl tar openssl
     } >>\"\$log\" 2>&1 || {
       echo '[ERROR] apt install failed. Last 120 log lines:' >&2
@@ -90,6 +171,10 @@ install_atuin_quiet() {
 
 inject_hosts() {
   local n="$1"
+
+  # We hardcode the DOMAIN -> YNH_IP mapping into /etc/hosts because this is a *local* test domain
+  # (e.g. atuin.yolo.test). We don't want or rely on external DNS for this E2E test.
+  # This makes "curl http(s)://$DOMAIN" and Atuin sync resolve to the YunoHost container reliably.
   log "${n}: Injecting /etc/hosts: ${YNH_IP} ${DOMAIN}"
   incus exec "$n" -- bash -lc "
     set -euo pipefail
@@ -105,7 +190,8 @@ install_yunohost_ca_into_client() {
 
   log "${client}: Installing YunoHost CA from ${YNH_CONTAINER}:${YNH_CA_PATH} ..."
   # Stream CA cert from YunoHost container into client container and register it in system trust store.
-  # If the CA file doesn't exist, we fail clearly.
+  # This is needed only when the server is reached via HTTPS and uses a local/self-signed CA,
+  # otherwise clients will fail with TLS errors (UnknownIssuer).
   incus exec "${YNH_CONTAINER}" -- bash -lc "test -s '${YNH_CA_PATH}'" >/dev/null 2>&1 || {
     err "YunoHost CA file not found or empty: ${YNH_CA_PATH} (override via YNH_CA_PATH=...)"
     exit 1
@@ -144,6 +230,39 @@ detect_scheme() {
   echo "http"
 }
 
+delete_remote_account_from_client1() {
+  # Client-side deletion of the server account.
+  # We try to find a non-interactive flag if supported; otherwise fall back to piping "yes".
+  log "[CLEANUP] ${CLIENT1_NAME}: deleting remote account for '${USERNAME}'"
+
+  incus exec "${CLIENT1_NAME}" -- bash -lc "
+    set -euo pipefail
+    export ATUIN_SYNC_ADDRESS='${SYNC_ADDR}'
+    export ATUIN_SESSION=\"ynh-test-client1-cleanup-\$(date +%s%N)\"
+
+    # Ensure we're logged in (client1 was logged out earlier)
+    atuin login -u '${USERNAME}' -p '${PASSWORD}' -k '${KEY}'
+
+    help=\$(atuin account delete --help 2>&1 || true)
+
+    if echo \"\$help\" | grep -qE '(--yes|-y|--force)'; then
+      if echo \"\$help\" | grep -qE '(^|[[:space:]])--yes([[:space:]]|,|$)'; then
+        atuin account delete --yes
+      elif echo \"\$help\" | grep -qE '(^|[[:space:]])-y([[:space:]]|,|$)'; then
+        atuin account delete -y
+      elif echo \"\$help\" | grep -qE '(^|[[:space:]])--force([[:space:]]|,|$)'; then
+        atuin account delete --force
+      else
+        # Flag hinted but not clearly parseable; fall back to prompt automation
+        yes | atuin account delete
+      fi
+    else
+      # No non-interactive flags detected -> best-effort answer the prompt
+      yes | atuin account delete
+    fi
+  "
+}
+
 log "Recreating clients..."
 cleanup_instance "${CLIENT1_NAME}"
 cleanup_instance "${CLIENT2_NAME}"
@@ -166,6 +285,8 @@ log "Using ATUIN_SYNC_ADDRESS=${SYNC_ADDR}"
 
 if [[ "${scheme}" == "https" ]]; then
   warn "HTTPS detected. Installing YunoHost local CA into both clients to avoid UnknownIssuer..."
+  # Only do this for HTTPS. For HTTP there's no TLS validation to fix, and adding extra CA handling
+  # would just be unnecessary moving parts.
   install_yunohost_ca_into_client "${CLIENT1_NAME}"
   install_yunohost_ca_into_client "${CLIENT2_NAME}"
 fi
@@ -178,6 +299,11 @@ incus exec "${CLIENT1_NAME}" -- bash -lc "
 
   atuin register -u '${USERNAME}' -e '${EMAIL}' -p '${PASSWORD}'
 
+  # RUN_ID uniquely identifies *this* test run (nanosecond timestamp).
+  # We prefix all injected history items with ATUIN_TEST_\${RUN_ID}_* so we can:
+  #  - grep only our own test commands
+  #  - avoid false positives from existing shell history
+  #  - run this script repeatedly without clashes
   RUN_ID=\$(date +%s%N)
   echo \"\$RUN_ID\" > /tmp/atuin_run_id
 
@@ -241,7 +367,10 @@ incus exec "${CLIENT2_NAME}" -- bash -lc "
   atuin status | sed -n '1,120p'
 "
 
-log "[OK] Tests passed: register, execute+record 5 cmds, import, sync, login, verify sync."
+# Ensure no user remains on server after successful tests (client-side).
+delete_remote_account_from_client1
+
+log "[OK] Tests passed: register, execute+record 5 cmds, import, sync, login, verify sync, delete account."
 log "If something failed, useful server-side logs:"
 log "  incus exec ${YNH_CONTAINER} -- journalctl -u nginx --no-pager -n 200 -l"
 log "  incus exec ${YNH_CONTAINER} -- tail -n 200 /var/log/nginx/${DOMAIN}-access.log 2>/dev/null || true"
