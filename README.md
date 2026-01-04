@@ -11,7 +11,7 @@ It shall NOT be edited by hand.
 Self-hosted Atuin for syncing and backing up encrypted shell history across devices
 
 [![🌐 Official app website](https://img.shields.io/badge/Official_app_website-darkgreen?style=for-the-badge)](https://atuin.sh)
-[![Version: 18.10.0~ynh2](https://img.shields.io/badge/Version-18.10.0~ynh2-rgb(18,138,11)?style=for-the-badge)](https://ci-apps.yunohost.org/ci/apps/atuin/)
+[![Version: 18.10.0~ynh3](https://img.shields.io/badge/Version-18.10.0~ynh3-rgb(18,138,11)?style=for-the-badge)](https://ci-apps.yunohost.org/ci/apps/atuin/)
 
 <div align="center">
 <a href="https://apps.yunohost.org/app/atuin"><img height="100px" src="https://github.com/YunoHost/yunohost-artwork/raw/refs/heads/main/badges/neopossum-badges/badge_more_info_on_the_appstore.svg"/></a>
