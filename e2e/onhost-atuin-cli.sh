@@ -148,8 +148,6 @@ assert_server_accepted_sync() {
 }
 
 generate_credentials_if_missing() {
-  # Server constraint (from your error): only [A-Za-z0-9-] allowed.
-  # We'll generate: <prefix-sanitized>-<runid>
   local run_id prefix user email
 
   run_id="$(date +%s%N)"
@@ -166,7 +164,6 @@ generate_credentials_if_missing() {
     USERNAME="${user}"
   fi
 
-  # if user provided but contains '_', fail fast with a clear message
   if echo "${USERNAME}" | grep -q '_'; then
     err "USERNAME contains '_' but server only allows alphanumeric + '-'"
     err "Set USERNAME without underscores, or rely on auto-generated username."
@@ -189,6 +186,10 @@ run_e2e() {
   local RUN_ID HISTFILE got status_file
 
   generate_credentials_if_missing
+
+  # IMPORTANT: required by atuin sync in non-interactive environments
+  export ATUIN_SESSION="onhost-e2e-$(date +%s%N)"
+  log "ATUIN_SESSION=${ATUIN_SESSION}"
 
   log "[TEST] register"
   atuin register -u "${USERNAME}" -e "${EMAIL}" -p "${PASSWORD}"
