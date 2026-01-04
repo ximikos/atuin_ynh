@@ -9,15 +9,17 @@ require() { command -v "$1" >/dev/null 2>&1 || { err "Missing '$1'"; exit 1; }; 
 
 # ---- Config (override via env) ----
 VERSION="${VERSION:-18.10.0}"                            # Atuin upstream version for CLI download
-DOMAIN="${DOMAIN:-atuin.ynh.test}"                        # if you want to test via nginx domain
-SERVER_TOML="${SERVER_TOML:-/var/www/atuin/server.toml}"  # YunoHost app config path
-PASSWORD="${PASSWORD:-paSSw000rd!}"
-USERNAME="${USERNAME:-e2e_user}"
-EMAIL="${EMAIL:-e2e_user@example.invalid}"
+DOMAIN="${DOMAIN:-atuin.ynh.test}"
+SERVER_TOML="${SERVER_TOML:-/var/www/atuin/server.toml}"
 
-# If empty -> prefer localhost HTTP via parsed port from server.toml:
-#   http://127.0.0.1:<port>
-# If set -> use as-is (e.g. "https://atuin.ynh.test")
+# Credentials: if USERNAME/EMAIL not provided, they will be generated safely.
+PASSWORD="${PASSWORD:-paSSw000rd!}"
+USERNAME="${USERNAME:-}"                                 # optional
+EMAIL="${EMAIL:-}"                                       # optional
+USERNAME_PREFIX="${USERNAME_PREFIX:-e2e-user}"           # used when USERNAME not provided
+EMAIL_DOMAIN="${EMAIL_DOMAIN:-example.invalid}"          # used when EMAIL not provided
+
+# If empty -> prefer localhost HTTP via parsed port from server.toml
 ATUIN_SYNC_ADDRESS_OVERRIDE="${ATUIN_SYNC_ADDRESS_OVERRIDE:-}"
 
 # Isolated client home (empty -> mktemp)
@@ -81,7 +83,6 @@ setup_isolated_home() {
     mkdir -p "${E2E_HOME}"
     export HOME="${E2E_HOME}"
   else
-    export HOME
     HOME="$(mktemp -d)"
     export HOME
   fi
@@ -98,7 +99,6 @@ configure_sync_address() {
   if [[ -n "${ATUIN_SYNC_ADDRESS_OVERRIDE}" ]]; then
     addr="${ATUIN_SYNC_ADDRESS_OVERRIDE}"
   else
-    # safest for on-host e2e: direct to local server, avoids TLS/CA hassle
     local port
     port="$(read_server_port)"
     addr="http://127.0.0.1:${port}"
@@ -113,8 +113,6 @@ EOF
 }
 
 extract_last_sync_value() {
-  # Prints the value after "Last sync:" (trimmed), or empty string if not found
-  # We avoid depending on exact spacing/case too much.
   local status_file="$1"
   awk '
     BEGIN{IGNORECASE=1}
@@ -139,7 +137,6 @@ assert_server_accepted_sync() {
     exit 1
   fi
 
-  # Common values when nothing synced: "Never" (exact casing can vary)
   if [[ "${last_sync,,}" == "never" ]]; then
     err "Server sync not confirmed: Last sync is 'Never'"
     err "atuin status output:"
@@ -150,10 +147,48 @@ assert_server_accepted_sync() {
   log "[OK] Server accepted sync (Last sync: ${last_sync})"
 }
 
+generate_credentials_if_missing() {
+  # Server constraint (from your error): only [A-Za-z0-9-] allowed.
+  # We'll generate: <prefix-sanitized>-<runid>
+  local run_id prefix user email
+
+  run_id="$(date +%s%N)"
+  prefix="${USERNAME_PREFIX}"
+
+  # sanitize: lowercase, replace '_' with '-', drop other invalid chars
+  prefix="$(echo "${prefix}" | tr '[:upper:]' '[:lower:]' | tr '_' '-' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')"
+  if [[ -z "${prefix}" ]]; then
+    prefix="e2e"
+  fi
+
+  if [[ -z "${USERNAME}" ]]; then
+    user="${prefix}-${run_id}"
+    USERNAME="${user}"
+  fi
+
+  # if user provided but contains '_', fail fast with a clear message
+  if echo "${USERNAME}" | grep -q '_'; then
+    err "USERNAME contains '_' but server only allows alphanumeric + '-'"
+    err "Set USERNAME without underscores, or rely on auto-generated username."
+    exit 1
+  fi
+
+  if [[ -z "${EMAIL}" ]]; then
+    email="${USERNAME}@${EMAIL_DOMAIN}"
+    EMAIL="${email}"
+  fi
+
+  export USERNAME EMAIL
+  log "Using USERNAME=${USERNAME}"
+  log "Using EMAIL=${EMAIL}"
+}
+
 run_e2e() {
   require atuin
 
   local RUN_ID HISTFILE got status_file
+
+  generate_credentials_if_missing
 
   log "[TEST] register"
   atuin register -u "${USERNAME}" -e "${EMAIL}" -p "${PASSWORD}"
@@ -180,7 +215,6 @@ run_e2e() {
   log "[TEST] atuin sync"
   atuin sync
 
-  # Capture status for parsing + debugging
   status_file="${HOME}/atuin_status.txt"
   atuin status > "${status_file}" 2>&1 || {
     err "atuin status failed"
@@ -188,10 +222,8 @@ run_e2e() {
     exit 1
   }
 
-  # Hard assertion: last sync must not be "Never"
   assert_server_accepted_sync "${status_file}"
 
-  # Optional sanity: confirm we see our 5 commands locally
   got="$(atuin history list --cmd-only | grep -F "ATUIN_TEST_${RUN_ID}_" | sort -u | wc -l | tr -d ' ')"
   if [[ "${got}" -ne 5 ]]; then
     err "Expected 5 imported commands locally, got ${got}"
