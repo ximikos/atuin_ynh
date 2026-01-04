@@ -113,13 +113,15 @@ EOF
 }
 
 extract_last_sync_value() {
+  # Robustly prints the value after "Last sync:" (trimmed), even if indented.
+  # Returns empty string if not found.
   local status_file="$1"
   awk '
     BEGIN{IGNORECASE=1}
-    $0 ~ /^last[[:space:]]+sync[[:space:]]*:/ {
-      sub(/^[^:]*:[[:space:]]*/, "", $0);
-      gsub(/[[:space:]]+$/, "", $0);
-      print $0;
+    index(tolower($0), "last sync:") {
+      sub(/.*[Ll]ast[[:space:]]+[Ss]ync[[:space:]]*:[[:space:]]*/, "", $0)
+      gsub(/[[:space:]]+$/, "", $0)
+      print $0
       exit 0
     }
   ' "$status_file" || true
@@ -133,14 +135,14 @@ assert_server_accepted_sync() {
   if [[ -z "${last_sync}" ]]; then
     err "Could not find 'Last sync:' in atuin status output"
     err "atuin status output:"
-    sed -n '1,200p' "$status_file" >&2 || true
+    sed -n '1,220p' "$status_file" >&2 || true
     exit 1
   fi
 
   if [[ "${last_sync,,}" == "never" ]]; then
     err "Server sync not confirmed: Last sync is 'Never'"
     err "atuin status output:"
-    sed -n '1,200p' "$status_file" >&2 || true
+    sed -n '1,220p' "$status_file" >&2 || true
     exit 1
   fi
 
@@ -187,7 +189,7 @@ run_e2e() {
 
   generate_credentials_if_missing
 
-  # IMPORTANT: required by atuin sync in non-interactive environments
+  # Required by atuin sync in non-interactive environments
   export ATUIN_SESSION="onhost-e2e-$(date +%s%N)"
   log "ATUIN_SESSION=${ATUIN_SESSION}"
 
@@ -219,7 +221,7 @@ run_e2e() {
   status_file="${HOME}/atuin_status.txt"
   atuin status > "${status_file}" 2>&1 || {
     err "atuin status failed"
-    sed -n '1,200p' "${status_file}" >&2 || true
+    sed -n '1,220p' "${status_file}" >&2 || true
     exit 1
   }
 
