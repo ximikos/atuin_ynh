@@ -1,0 +1,148 @@
+name: e2e-hetzner-arm64-yunohost-atuin
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-hetzner-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spawn-runner:
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.spawn.outputs.label }}
+      server_id: ${{ steps.spawn.outputs.server_id }}
+    steps:
+      - name: Spawn Hetzner ARM runner
+        id: spawn
+        uses: Cyclenerd/hcloud-github-runner@vX
+        with:
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          github_token: ${{ secrets.RUNNER_TOKEN }}
+          server_type: cax11
+          image: debian-12
+          location: nbg1
+          name: ynh-atuin-e2e-arm64
+
+  test:
+    needs: spawn-runner
+    runs-on: [self-hosted, ${{ needs.spawn-runner.outputs.label }}]
+    steps:
+      - name: Checkout repo (this branch/commit)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install YunoHost (non-interactive) + postinstall + domain
+        shell: bash
+        env:
+          YUNOHOST_ADMIN_PASSWORD: ${{ secrets.YUNOHOST_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          # base deps
+          apt-get update
+          apt-get install -y curl ca-certificates git jq
+
+          # YunoHost install: automatic mode (no questions)
+          curl https://install.yunohost.org | bash -s -- -a
+
+          # postinstall: must accept ToS + username constraints (no "admin", no "-")
+          yunohost tools postinstall \
+            -d ynh.test \
+            -u ci_admin \
+            -F "CI Admin" \
+            -p "$YUNOHOST_ADMIN_PASSWORD" \
+            --ignore-dyndns \
+            --i-have-read-terms-of-services
+
+          # create app domain
+          yunohost domain add atuin.ynh.test
+
+      - name: Install Atuin app from workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # install app from local repo checkout (current branch)
+          yunohost app install "${GITHUB_WORKSPACE}" \
+            --force \
+            -a "domain=atuin.ynh.test&path=/&init_main_permission=visitors"
+
+      - name: Enable open_registration (stop/sed/start)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yunohost service stop atuin
+          sed -i 's/^open_registration = .*/open_registration = true/' /var/www/atuin/server.toml
+          yunohost service start atuin
+
+          yunohost service log atuin || true
+
+      - name: Run on-host Atuin CLI E2E
+        shell: bash
+        env:
+          # password used by atuin register in your e2e script
+          PASSWORD: ${{ secrets.ATUIN_E2E_PASSWORD }}
+          # optional overrides if you want:
+          # VERSION: "18.10.0"
+          # SERVER_TOML: "/var/www/atuin/server.toml"
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/e2e/onhost-atuin-cli.sh"
+
+      - name: Collect logs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/artifacts
+
+          # YunoHost / system
+          yunohost --log | tail -n 6000 > /tmp/artifacts/yunohost-log-tail.txt || true
+          yunohost diagnosis show --issues --human-readable > /tmp/artifacts/yunohost-diagnosis-issues.txt || true
+          journalctl --no-pager > /tmp/artifacts/journal-all.txt || true
+
+          # Services
+          yunohost service log atuin > /tmp/artifacts/atuin-service-log.txt || true
+          journalctl -u atuin --no-pager -n 400 -l > /tmp/artifacts/journal-atuin.txt || true
+          journalctl -u nginx --no-pager -n 400 -l > /tmp/artifacts/journal-nginx.txt || true
+
+          # App files (best-effort)
+          cp -a /var/www/atuin/server.toml /tmp/artifacts/server.toml || true
+          cp -a /var/www/atuin/atuin.env /tmp/artifacts/atuin.env || true
+
+          # DB quick info (best-effort)
+          ls -la /home/yunohost.app/atuin > /tmp/artifacts/data-dir-ls.txt || true
+          ls -la /var/www/atuin > /tmp/artifacts/install-dir-ls.txt || true
+
+          # Nginx vhost logs (may not exist depending on config)
+          ls -la /var/log/nginx > /tmp/artifacts/nginx-log-dir-ls.txt || true
+          tail -n 200 /var/log/nginx/*atuin*access*.log > /tmp/artifacts/nginx-atuin-access-tail.txt 2>/dev/null || true
+          tail -n 200 /var/log/nginx/*atuin*error*.log  > /tmp/artifacts/nginx-atuin-error-tail.txt  2>/dev/null || true
+
+          tar -czf /tmp/ynh-atuin-artifacts.tgz -C /tmp artifacts
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ynh-atuin-arm64-logs
+          path: /tmp/ynh-atuin-artifacts.tgz
+
+  cleanup:
+    if: always()
+    needs: [spawn-runner, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cleanup runner (terminate server)
+        uses: Cyclenerd/hcloud-github-runner@vX
+        with:
+          mode: cleanup
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          github_token: ${{ secrets.RUNNER_TOKEN }}
+          server_id: ${{ needs.spawn-runner.outputs.server_id }}
